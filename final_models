@@ -1,0 +1,1670 @@
+library(keras)
+library(tensorflow)
+library(reticulate)
+library(caret)
+
+
+#early stopping function---------------------------------------------------------------------------------------------------
+
+es <- list(callback_early_stopping(monitor = "val_accuracy", 
+                                   min_delta = 0.001, 
+                                   patience = 30, 
+                                   mode = "max",
+                                   restore_best_weights = TRUE))
+                                   
+#max length -------------------------------------------------------------------------------------------------------------------
+max_len <- 100
+
+#EXIT PLAY Model Building--------------------------------------------------------------------------------------------
+
+# Simple RNN
+
+lambdas <-  c(0,0.001,0.01,0.1,1,10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+EXIT_ACT_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_act")
+
+EXIT_encoded_ACT <- EXIT_ACT_input %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_RES_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_res")
+
+EXIT_encoded_ACT_RES <- EXIT_ACT_RES_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_TYPE_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_type")
+
+EXIT_encoded_ACT_TYPE <- EXIT_ACT_TYPE_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_X_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_x_crd")
+
+EXIT_encoded_X_CRD <- EXIT_X_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_y_crd")
+
+EXIT_encoded_Y_CRD <- EXIT_Y_CRD_input %>%
+  layer_simple_rnn(units = 45)
+
+EXIT_X_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_x_end")
+
+EXIT_encoded_X_END <- EXIT_X_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_y_end")
+
+EXIT_encoded_Y_END <- EXIT_Y_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_POS_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_position")
+
+EXIT_encode_POS <- EXIT_POS_input %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_concatenated <- layer_concatenate(c(EXIT_encoded_ACT,  EXIT_encoded_ACT_RES,
+                                    EXIT_encoded_ACT_TYPE, EXIT_encoded_X_CRD,
+                                    EXIT_encoded_Y_CRD, EXIT_encoded_X_END,
+                                    EXIT_encoded_Y_END, EXIT_encode_POS))
+
+EXIT_play <- EXIT_concatenated %>%
+  layer_dense(unit = 45, activation = "relu") %>%
+  layer_dense(unit = 1, activation = "sigmoid",kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_SimpleRNN <- keras_model(inputs = c(EXIT_ACT_input,  EXIT_ACT_RES_input,
+                                         EXIT_ACT_TYPE_input, EXIT_X_CRD_input,
+                                         EXIT_Y_CRD_input, EXIT_X_END_input,
+                                         EXIT_Y_END_input, EXIT_POS_input),
+                              outputs = EXIT_play)
+
+
+EXIT_SimpleRNN %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(EXIT_SimpleRNN)
+
+EXIT_train_run <- EXIT_SimpleRNN %>% fit(
+x = list(train_EXIT_ACT, train_EXIT_ACT_RES, train_EXIT_ACT_TYPE,
+         train_EXIT_X_CRD, train_EXIT_Y_CRD, train_EXIT_X_END,
+         train_EXIT_Y_END, train_EXIT_POS),
+y = train_OUTPUT,
+epochs = 90, batch_size = configs[i,2],
+validation_data = list(list(val_EXIT_ACT, val_EXIT_ACT_RES, val_EXIT_ACT_TYPE,
+                             val_EXIT_X_CRD, val_EXIT_Y_CRD, val_EXIT_X_END, val_EXIT_Y_END,
+                            val_EXIT_POS),val_OUTPUT),
+ callbacks = es)
+
+
+
+
+EXIT_score <- EXIT_SimpleRNN  %>% evaluate(list(test_EXIT_ACT, test_EXIT_ACT_RES,
+                                                    test_EXIT_ACT_TYPE, test_EXIT_X_CRD,
+                                                    test_EXIT_Y_CRD, test_EXIT_X_END,
+                                                    test_EXIT_Y_END, test_EXIT_POS),
+                                          test_OUTPUT)
+
+EXIT_pred_SimpleRNN <- EXIT_SimpleRNN  %>% predict(list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                     test_EXIT_X_CRD,test_EXIT_Y_CRD,
+                                                     test_EXIT_X_END, test_EXIT_Y_END, test_EXIT_POS))
+
+pred_classes <- EXIT_pred_SimpleRNN
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_EXIT_SimpleRNN <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+EXIT_SimpleRNN_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(EXIT_SimpleRNN, list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                                                                test_EXIT_X_CRD,test_EXIT_Y_CRD, test_EXIT_X_END,
+                                                                                                test_EXIT_Y_END, test_EXIT_POS),
+                                                                            batch_size = configs[i,2])))
+
+EXIT_SimpleRNN_res <- list(EXIT_train_run, EXIT_score, EXIT_pred_SimpleRNN, mod_metrics_EXIT_SimpleRNN, EXIT_SimpleRNN_roc)
+filename <- paste0("EXIT_SimpleRNN_res",configs[i,1],"_",configs[i,2],".RData")
+save(EXIT_SimpleRNN_res, file = filename)
+}
+# Simple UP RNN
+
+lambdas <-  c(0,0.001,0.01,0.1,1,10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+EXIT_ACT_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_act")
+
+EXIT_encoded_ACT <- EXIT_ACT_input %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_RES_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_res")
+
+EXIT_encoded_ACT_RES <- EXIT_ACT_RES_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_TYPE_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_type")
+
+EXIT_encoded_ACT_TYPE <- EXIT_ACT_TYPE_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_X_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_x_crd")
+
+EXIT_encoded_X_CRD <- EXIT_X_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_y_crd")
+
+EXIT_encoded_Y_CRD <- EXIT_Y_CRD_input %>%
+  layer_simple_rnn(units = 45)
+
+EXIT_X_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_x_end")
+
+EXIT_encoded_X_END <- EXIT_X_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "exit_y_end")
+
+EXIT_encoded_Y_END <- EXIT_Y_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_POS_input <- layer_input(shape = c(max_len), dtype = "int32", name = "exit_position")
+
+EXIT_encode_POS <- EXIT_POS_input %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_concatenated <- layer_concatenate(c(EXIT_encoded_ACT,  EXIT_encoded_ACT_RES,
+                                    EXIT_encoded_ACT_TYPE, EXIT_encoded_X_CRD,
+                                    EXIT_encoded_Y_CRD, EXIT_encoded_X_END,
+                                    EXIT_encoded_Y_END, EXIT_encode_POS))
+
+EXIT_play <- EXIT_concatenated %>%
+  layer_dense(unit = 45, activation = "relu") %>%
+  layer_dense(unit = 1, activation = "sigmoid",kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_SimpleRNN <- keras_model(inputs = c(EXIT_ACT_input,  EXIT_ACT_RES_input,
+                                         EXIT_ACT_TYPE_input, EXIT_X_CRD_input,
+                                         EXIT_Y_CRD_input, EXIT_X_END_input,
+                                         EXIT_Y_END_input, EXIT_POS_input),
+                              outputs = EXIT_play)
+
+
+EXIT_SimpleRNN %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(EXIT_SimpleRNN)
+
+EXIT_up_train_run <- EXIT_SimpleRNN %>% fit(
+  x = list(up_train_EXIT_ACT, up_train_EXIT_ACT_RES, up_train_EXIT_ACT_TYPE,
+           up_train_EXIT_X_CRD, up_train_EXIT_Y_CRD, up_train_EXIT_X_END,
+           up_train_EXIT_Y_END, up_train_EXIT_POS),
+  y = up_train_OUTPUT,
+  epochs = 90, batch_size = configs[i,2],
+  validation_data = list(list(val_EXIT_ACT, val_EXIT_ACT_RES, val_EXIT_ACT_TYPE,
+                              val_EXIT_X_CRD, val_EXIT_Y_CRD, val_EXIT_X_END, val_EXIT_Y_END,
+                              val_EXIT_POS),val_OUTPUT),
+  callbacks = es)
+
+
+
+EXIT_score <- EXIT_SimpleRNN  %>% evaluate(list(test_EXIT_ACT, test_EXIT_ACT_RES,
+                                                    test_EXIT_ACT_TYPE, test_EXIT_X_CRD,
+                                                    test_EXIT_Y_CRD, test_EXIT_X_END,
+                                                    test_EXIT_Y_END, test_EXIT_POS),
+                                          test_OUTPUT)
+
+EXIT_pred_SimpleRNN <- EXIT_SimpleRNN  %>% predict(list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                     test_EXIT_X_CRD,test_EXIT_Y_CRD,
+                                                     test_EXIT_X_END, test_EXIT_Y_END, test_EXIT_POS))
+
+pred_classes <- EXIT_pred_SimpleRNN
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_EXIT_SimpleRNN <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+EXIT_SimpleRNN_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(EXIT_SimpleRNN, list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                                                                test_EXIT_X_CRD,test_EXIT_Y_CRD, test_EXIT_X_END,
+                                                                                                test_EXIT_Y_END, test_EXIT_POS),
+                                                                            batch_size = configs[i,2])))
+
+EXIT_SimpleRNN_res_up <- list(EXIT_up_train_run, EXIT_score, EXIT_pred_SimpleRNN, mod_metrics_EXIT_SimpleRNN, EXIT_SimpleRNN_roc)
+filename <- paste0("EXIT_SimpleRNN_res_up_",configs[i,1],"_",configs[i,2],".RData")
+save(EXIT_SimpleRNN_res_up, file = filename)
+}
+
+# LSTM ------------------------------------------------------------------------------------------------------------------------------------
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+EXIT_ACT_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_act_lstm")
+
+EXIT_encoded_ACT_lstm <- EXIT_ACT_input_lstm %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_RES_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_res_lstm")
+
+EXIT_encoded_ACT_RES_lstm <- EXIT_ACT_RES_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25,  trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_TYPE_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_type")
+
+EXIT_encoded_ACT_TYPE_lstm <- EXIT_ACT_TYPE_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_X_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_x_crd")
+
+EXIT_encoded_X_CRD_lstm <- EXIT_X_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_y_crd")
+
+EXIT_encoded_Y_CRD_lstm <- EXIT_Y_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_X_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_x_end")
+
+EXIT_encoded_X_END_lstm <- EXIT_X_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_y_end")
+
+EXIT_encoded_Y_END_lstm <- EXIT_Y_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_POS_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_position")
+
+EXIT_encode_POS_lstm <- EXIT_POS_input_lstm %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_concatenated_lstm <- layer_concatenate(c(EXIT_encoded_ACT_lstm,  EXIT_encoded_ACT_RES_lstm,
+                                             EXIT_encoded_ACT_TYPE_lstm, EXIT_encoded_X_CRD_lstm,
+                                             EXIT_encoded_Y_CRD_lstm, EXIT_encoded_X_END_lstm,
+                                             EXIT_encoded_Y_END_lstm, EXIT_encode_POS_lstm))
+
+EXIT_lstm_play <- EXIT_concatenated_lstm %>%
+  layer_dense(units = max_len, activation = "relu", kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid",  kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_lstm <- keras_model(inputs = c(EXIT_ACT_input_lstm,  EXIT_ACT_RES_input_lstm,
+                                   EXIT_ACT_TYPE_input_lstm, EXIT_X_CRD_input_lstm,
+                                   EXIT_Y_CRD_input_lstm, EXIT_X_END_input_lstm,
+                                   EXIT_Y_END_input_lstm, EXIT_POS_input_lstm),
+                        outputs = EXIT_lstm_play)
+
+
+EXIT_lstm %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(EXIT_lstm)
+
+EXIT_train_run_lstm <- EXIT_lstm %>% fit(
+  x = list(train_EXIT_ACT, train_EXIT_ACT_RES, train_EXIT_ACT_TYPE,
+           train_EXIT_X_CRD, train_EXIT_Y_CRD, train_EXIT_X_END,
+           train_EXIT_Y_END, train_EXIT_POS),
+  y = train_OUTPUT,
+  epochs = 90, batch_size = configs[i,2],
+  validation_data = list(list(val_EXIT_ACT, val_EXIT_ACT_RES, val_EXIT_ACT_TYPE,
+                              val_EXIT_X_CRD, val_EXIT_Y_CRD, val_EXIT_X_END, val_EXIT_Y_END,
+                              val_EXIT_POS),val_OUTPUT),
+callbacks = es)
+
+
+
+EXIT_score_lstm <- EXIT_lstm  %>% evaluate(list(test_EXIT_ACT, test_EXIT_ACT_RES,
+                                               test_EXIT_ACT_TYPE, test_EXIT_X_CRD,
+                                               test_EXIT_Y_CRD, test_EXIT_X_END,
+                                               test_EXIT_Y_END, test_EXIT_POS),
+                                          test_OUTPUT)
+
+
+EXIT_pred_LSTM <- EXIT_lstm  %>% predict(list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                        test_EXIT_X_CRD,test_EXIT_Y_CRD,
+                                                        test_EXIT_X_END, test_EXIT_Y_END, test_EXIT_POS))
+
+pred_classes <- EXIT_pred_LSTM
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_EXIT_LSTM <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+EXIT_LSTM_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(EXIT_lstm, list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                                                                  test_EXIT_X_CRD,test_EXIT_Y_CRD, test_EXIT_X_END,
+                                                                                                  test_EXIT_Y_END, test_EXIT_POS),
+                                                                             batch_size = configs[i,2])))
+EXIT_LSTM_res <- list(EXIT_train_run_lstm, EXIT_score_lstm, EXIT_pred_LSTM, mod_metrics_EXIT_LSTM, EXIT_LSTM_roc)
+filename <- paste0("EXIT_LSTM_res_",configs[i,1],"_",configs[i,2],".RData")
+save(EXIT_LSTM_res, file = filename)
+}
+
+# LSTM UP sample ---------------------------------------------------------------------------------------------------------------------------------------------------
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+EXIT_ACT_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_act_lstm")
+
+EXIT_encoded_ACT_lstm <- EXIT_ACT_input_lstm %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_RES_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_res_lstm")
+
+EXIT_encoded_ACT_RES_lstm <- EXIT_ACT_RES_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25,  trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_ACT_TYPE_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_type")
+
+EXIT_encoded_ACT_TYPE_lstm <- EXIT_ACT_TYPE_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_X_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_x_crd")
+
+EXIT_encoded_X_CRD_lstm <- EXIT_X_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_y_crd")
+
+EXIT_encoded_Y_CRD_lstm <- EXIT_Y_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_X_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_x_end")
+
+EXIT_encoded_X_END_lstm <- EXIT_X_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+EXIT_Y_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "EXIT_y_end")
+
+EXIT_encoded_Y_END_lstm <- EXIT_Y_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_POS_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "EXIT_position")
+
+EXIT_encode_POS_lstm <- EXIT_POS_input_lstm %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_concatenated_lstm <- layer_concatenate(c(EXIT_encoded_ACT_lstm,  EXIT_encoded_ACT_RES_lstm,
+                                             EXIT_encoded_ACT_TYPE_lstm, EXIT_encoded_X_CRD_lstm,
+                                             EXIT_encoded_Y_CRD_lstm, EXIT_encoded_X_END_lstm,
+                                             EXIT_encoded_Y_END_lstm, EXIT_encode_POS_lstm))
+
+EXIT_lstm_play <- EXIT_concatenated_lstm %>%
+  layer_dense(units = max_len, activation = "relu", kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid",  kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+EXIT_lstm <- keras_model(inputs = c(EXIT_ACT_input_lstm,  EXIT_ACT_RES_input_lstm,
+                                   EXIT_ACT_TYPE_input_lstm, EXIT_X_CRD_input_lstm,
+                                   EXIT_Y_CRD_input_lstm, EXIT_X_END_input_lstm,
+                                   EXIT_Y_END_input_lstm, EXIT_POS_input_lstm),
+                        outputs = EXIT_lstm_play)
+
+
+EXIT_lstm %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(EXIT_lstm)
+
+EXIT_up_train_run_lstm <- EXIT_lstm %>% fit(
+  x = list(up_train_EXIT_ACT, up_train_EXIT_ACT_RES, up_train_EXIT_ACT_TYPE,
+           up_train_EXIT_X_CRD, up_train_EXIT_Y_CRD, up_train_EXIT_X_END,
+           up_train_EXIT_Y_END, up_train_EXIT_POS),
+  y = up_train_OUTPUT,
+  epochs = 90, batch_size = configs[i,2],
+  validation_data = list(list(val_EXIT_ACT, val_EXIT_ACT_RES, val_EXIT_ACT_TYPE,
+                              val_EXIT_X_CRD, val_EXIT_Y_CRD, val_EXIT_X_END, val_EXIT_Y_END,
+                              val_EXIT_POS),val_OUTPUT),
+  callbacks = es)
+
+EXIT_score_lstm <- EXIT_lstm  %>% evaluate(list(test_EXIT_ACT, test_EXIT_ACT_RES,
+                                               test_EXIT_ACT_TYPE, test_EXIT_X_CRD,
+                                               test_EXIT_Y_CRD, test_EXIT_X_END,
+                                               test_EXIT_Y_END, test_EXIT_POS),
+                                          test_OUTPUT)
+
+
+EXIT_pred_LSTM <- EXIT_lstm  %>% predict(list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                        test_EXIT_X_CRD,test_EXIT_Y_CRD,
+                                                        test_EXIT_X_END, test_EXIT_Y_END, test_EXIT_POS))
+
+pred_classes <- EXIT_pred_LSTM
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_EXIT_LSTM <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+EXIT_LSTM_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(EXIT_lstm, list(test_EXIT_ACT, test_EXIT_ACT_RES, test_EXIT_ACT_TYPE,
+                                                                                                  test_EXIT_X_CRD,test_EXIT_Y_CRD, test_EXIT_X_END,
+                                                                                                  test_EXIT_Y_END, test_EXIT_POS),
+                                                                             batch_size = configs[i,2])))
+EXIT_LSTM_res_up <- list(EXIT_up_train_run_lstm, EXIT_score_lstm, EXIT_pred_LSTM, mod_metrics_EXIT_LSTM, EXIT_LSTM_roc)
+filename <- paste0("EXIT_LSTM_res_up_",configs[i,1],"_",configs[i,2],".RData")
+save(EXIT_LSTM_res_up, file = filename)
+}
+
+#FOWARD Model building ---------------------------------------------------------------------------------------------------------
+
+#Simple RNN
+
+
+lambdas <- c(0,0.001,0.01,0.1,1,10)
+batch <- c(32,128,256)
+configs <- expand.grid(lambdas,batch)
+
+for (i in 1:nrow(configs)){
+
+FWD_ACT_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_act")
+
+encoded_FWD_ACT <- FWD_ACT_input %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_RES_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_res")
+
+encoded_FWD_ACT_RES <- FWD_ACT_RES_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_TYPE_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_type")
+
+encoded_FWD_ACT_TYPE <- FWD_ACT_TYPE_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_crd")
+
+encoded_FWD_X_CRD <- FWD_X_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_Y_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_crd")
+
+encoded_FWD_Y_CRD <- FWD_Y_CRD_input %>%
+  layer_simple_rnn(units = 45,  kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_end")
+
+encoded_FWD_X_END <- FWD_X_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_Y_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_end")
+
+encoded_FWD_Y_END <- FWD_Y_END_input %>%
+  layer_simple_rnn(units = 45,   kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_POS_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_position")
+
+encode_FWD_POS <- FWD_POS_input %>%
+  layer_embedding(input_dim = 100, output_dim = 13, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45,  kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_concatenated <- layer_concatenate(c(encoded_FWD_ACT,  encoded_FWD_ACT_RES, encoded_FWD_ACT_TYPE,
+                                    encoded_FWD_X_CRD, encoded_FWD_Y_CRD, encoded_FWD_X_END,
+                                    encoded_FWD_Y_END, encode_FWD_POS))
+
+FWD_play <- FWD_concatenated %>%
+  layer_dense(units = max_len, activation = 'relu' , kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_SimpleRNN <- keras_model(inputs = c(FWD_ACT_input,  FWD_ACT_RES_input,
+                                        FWD_ACT_TYPE_input, FWD_X_CRD_input,
+                                        FWD_Y_CRD_input, FWD_X_END_input,
+                                        FWD_Y_END_input, FWD_POS_input),
+                             outputs = FWD_play)
+
+
+FWD_SimpleRNN %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(FWD_SimpleRNN)
+
+FWD_train_run <- FWD_SimpleRNN %>% fit(
+x = list(train_FORWARD_ACT, train_FORWARD_ACT_RES, train_FORWARD_ACT_TYPE,
+          train_FORWARD_X_CRD, train_FORWARD_Y_CRD, train_FORWARD_X_END,
+          train_FORWARD_Y_END, train_FORWARD_POS),
+y = train_OUTPUT,
+epochs = 90, batch_size = configs[i,2],
+validation_data = list(list(val_FORWARD_ACT, val_FORWARD_ACT_RES, val_FORWARD_ACT_TYPE,
+                            val_FORWARD_X_CRD, val_FORWARD_Y_CRD, val_FORWARD_X_END,
+                            val_FORWARD_Y_END,
+                            val_FORWARD_POS), val_OUTPUT),
+ callbacks = es)
+
+
+
+
+
+FWD_score <- FWD_SimpleRNN  %>% evaluate(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                   test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                   test_FORWARD_Y_END, test_FORWARD_POS),
+                                          test_OUTPUT)
+
+FWD_pred_SimpleRNN <- FWD_SimpleRNN  %>% predict(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                      test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                      test_FORWARD_Y_END, test_FORWARD_POS))
+
+pred_classes <- FWD_pred_SimpleRNN
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_FWD_SimpleRNN <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+FWD_SimpleRNN_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(FWD_SimpleRNN, list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                                                            test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                                                            test_FORWARD_Y_END, test_FORWARD_POS),
+                                                                        batch_size = configs[i,2])))
+
+
+FWD_SimpleRNN_res <- list(FWD_train_run, FWD_score, FWD_pred_SimpleRNN, mod_metrics_FWD_SimpleRNN, FWD_SimpleRNN_roc)
+filename <- paste0("FWD_SimpleRNN_res",configs[i,1],"_",configs[i,2],".RData")
+save(FWD_SimpleRNN_res, file = filename)
+}
+
+
+#Simple UP sampled RNN
+
+
+lambdas <- c(0,0.001,0.01,0.1,1,10)
+batch <- c(32,128,256)
+configs <- expand.grid(lambdas,batch)
+
+for (i in 1:nrow(configs)){
+
+FWD_ACT_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_act")
+
+encoded_FWD_ACT <- FWD_ACT_input %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_RES_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_res")
+
+encoded_FWD_ACT_RES <- FWD_ACT_RES_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_TYPE_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_type")
+
+encoded_FWD_ACT_TYPE <- FWD_ACT_TYPE_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_crd")
+
+encoded_FWD_X_CRD <- FWD_X_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_Y_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_crd")
+
+encoded_FWD_Y_CRD <- FWD_Y_CRD_input %>%
+  layer_simple_rnn(units = 45,  kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_end")
+
+encoded_FWD_X_END <- FWD_X_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_Y_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_end")
+
+encoded_FWD_Y_END <- FWD_Y_END_input %>%
+  layer_simple_rnn(units = 45,   kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_POS_input <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_position")
+
+encode_FWD_POS <- FWD_POS_input %>%
+  layer_embedding(input_dim = 100, output_dim = 13, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45,  kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_concatenated <- layer_concatenate(c(encoded_FWD_ACT,  encoded_FWD_ACT_RES, encoded_FWD_ACT_TYPE,
+                                    encoded_FWD_X_CRD, encoded_FWD_Y_CRD, encoded_FWD_X_END,
+                                    encoded_FWD_Y_END, encode_FWD_POS))
+
+FWD_play <- FWD_concatenated %>%
+  layer_dense(units = max_len, activation = 'relu' , kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_SimpleRNN <- keras_model(inputs = c(FWD_ACT_input,  FWD_ACT_RES_input,
+                                        FWD_ACT_TYPE_input, FWD_X_CRD_input,
+                                        FWD_Y_CRD_input, FWD_X_END_input,
+                                        FWD_Y_END_input, FWD_POS_input),
+                             outputs = FWD_play)
+
+
+FWD_SimpleRNN %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(FWD_SimpleRNN)
+
+
+FWD_up_train_run <- FWD_SimpleRNN %>% fit(
+  x = list(up_train_FORWARD_ACT, up_train_FORWARD_ACT_RES, up_train_FORWARD_ACT_TYPE,
+           up_train_FORWARD_X_CRD, up_train_FORWARD_Y_CRD, up_train_FORWARD_X_END,
+           up_train_FORWARD_Y_END, up_train_FORWARD_POS),
+  y = up_train_OUTPUT,
+  epochs = 90, batch_size = configs[i,2],
+  validation_data = list(list(val_FORWARD_ACT, val_FORWARD_ACT_RES, val_FORWARD_ACT_TYPE,
+                              val_FORWARD_X_CRD, val_FORWARD_Y_CRD, val_FORWARD_X_END,
+                              val_FORWARD_Y_END,
+                              val_FORWARD_POS), val_OUTPUT),
+  callbacks = es)
+
+
+
+FWD_score <- FWD_SimpleRNN  %>% evaluate(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                   test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                   test_FORWARD_Y_END, test_FORWARD_POS),
+                                          test_OUTPUT)
+
+FWD_pred_SimpleRNN <- FWD_SimpleRNN  %>% predict(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                      test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                      test_FORWARD_Y_END, test_FORWARD_POS))
+
+pred_classes <- FWD_pred_SimpleRNN
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_FWD_SimpleRNN <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+FWD_SimpleRNN_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(FWD_SimpleRNN, list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                                                            test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                                                            test_FORWARD_Y_END, test_FORWARD_POS),
+                                                                        batch_size = configs[i,2])))
+
+
+FWD_SimpleRNN_res_up <- list(FWD_up_train_run, FWD_score, FWD_pred_SimpleRNN, mod_metrics_FWD_SimpleRNN, FWD_SimpleRNN_roc)
+filename <- paste0("FWD_SimpleRNN_res_up_",configs[i,1],"_",configs[i,2],".RData")
+save(FWD_SimpleRNN_res_up, file = filename)
+}
+
+#___________________________________________________________________________________________________________________#
+
+# LSTM
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+
+
+
+FWD_ACT_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "act_lstm")
+
+encoded_FWD_ACT_lstm <- FWD_ACT_input_lstm %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_RES_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_res_lstm")
+
+encoded_FWD_ACT_RES_lstm <- FWD_ACT_RES_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_TYPE_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_type_lstm")
+
+encoded_FWD_ACT_TYPE_lstm <- FWD_ACT_TYPE_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_crd_lstm")
+
+encoded_FWD_X_CRD_lstm <- FWD_X_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+FWD_Y_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_crd_lstm")
+
+encoded_FWD_Y_CRD_lstm <- FWD_Y_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_end_lstm")
+
+encoded_FWD_X_END_lstm <- FWD_X_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+FWD_Y_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_end_lstm")
+
+encoded_FWD_Y_END_lstm <- FWD_Y_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_POS_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_position_lstm")
+
+encode_FWD_POS_lstm <- FWD_POS_input_lstm %>%
+  layer_embedding(input_dim = 100, output_dim = 13, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_concatenated_lstm <- layer_concatenate(c(encoded_FWD_ACT_lstm,  encoded_FWD_ACT_RES_lstm, encoded_FWD_ACT_TYPE_lstm,
+                                        encoded_FWD_X_CRD_lstm, encoded_FWD_Y_CRD_lstm, encoded_FWD_X_END_lstm,
+                                        encoded_FWD_Y_END_lstm, encode_FWD_POS_lstm))
+
+FWD_play_lstm <- FWD_concatenated_lstm %>%
+  layer_dense(units = max_len, activation = 'relu', kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_lstm <- keras_model(inputs = c(FWD_ACT_input_lstm,  FWD_ACT_RES_input_lstm,
+                                        FWD_ACT_TYPE_input_lstm, FWD_X_CRD_input_lstm,
+                                        FWD_Y_CRD_input_lstm, FWD_X_END_input_lstm,
+                                        FWD_Y_END_input_lstm, FWD_POS_input_lstm),
+                        outputs = FWD_play_lstm)
+
+
+FWD_lstm %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(FWD_lstm)
+
+#FWD_lstm_train_run <- FWD_lstm %>% fit(
+ x = list(train_FORWARD_ACT, train_FORWARD_ACT_RES, train_FORWARD_ACT_TYPE,
+          train_FORWARD_X_CRD, train_FORWARD_Y_CRD, train_FORWARD_X_END,
+         train_FORWARD_Y_END, train_FORWARD_POS),
+ y = train_OUTPUT,
+ epochs =  90, batch_size = configs[i,2],
+ validation_data = list(list(val_FORWARD_ACT, val_FORWARD_ACT_RES, val_FORWARD_ACT_TYPE,
+ val_FORWARD_X_CRD, val_FORWARD_Y_CRD, val_FORWARD_X_END,                            
+ val_FORWARD_Y_END,
+ val_FORWARD_POS), val_OUTPUT),
+ callbacks = es)
+
+
+
+FWD_score_lstm <- FWD_lstm  %>% evaluate(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                              test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                              test_FORWARD_Y_END, test_FORWARD_POS),
+                                         test_OUTPUT)
+
+FWD_pred_LSTM <- FWD_lstm %>% predict(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                      test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                      test_FORWARD_Y_END, test_FORWARD_POS))
+pred_classes <- FWD_pred_LSTM
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_FWD_LSTM <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+FWD_LSTM_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(FWD_lstm, list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                                                                test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                                                                test_FORWARD_Y_END, test_FORWARD_POS),
+                                                                            batch_size = configs[i,2])))
+
+FWD_LSTM_res <- list(FWD_lstmtrain_run, FWD_score_lstm, FWD_pred_LSTM, mod_metrics_FWD_LSTM, FWD_LSTM_roc)
+filename <- paste0("FWD_LSTM_res",configs[i,1],"_",configs[i,2],".RData")
+save(FWD_LSTM_res, file = filename)
+}
+#___________________________________________________________________________________________________________________#
+
+# LSTM Up sampled
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+
+
+
+FWD_ACT_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "act_lstm")
+
+encoded_FWD_ACT_lstm <- FWD_ACT_input_lstm %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_RES_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_res_lstm")
+
+encoded_FWD_ACT_RES_lstm <- FWD_ACT_RES_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_ACT_TYPE_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_type_lstm")
+
+encoded_FWD_ACT_TYPE_lstm <- FWD_ACT_TYPE_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_crd_lstm")
+
+encoded_FWD_X_CRD_lstm <- FWD_X_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+FWD_Y_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_crd_lstm")
+
+encoded_FWD_Y_CRD_lstm <- FWD_Y_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_X_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_x_end_lstm")
+
+encoded_FWD_X_END_lstm <- FWD_X_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+FWD_Y_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "FWD_y_end_lstm")
+
+encoded_FWD_Y_END_lstm <- FWD_Y_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_POS_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "FWD_position_lstm")
+
+encode_FWD_POS_lstm <- FWD_POS_input_lstm %>%
+  layer_embedding(input_dim = 100, output_dim = 13, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_concatenated_lstm <- layer_concatenate(c(encoded_FWD_ACT_lstm,  encoded_FWD_ACT_RES_lstm, encoded_FWD_ACT_TYPE_lstm,
+                                        encoded_FWD_X_CRD_lstm, encoded_FWD_Y_CRD_lstm, encoded_FWD_X_END_lstm,
+                                        encoded_FWD_Y_END_lstm, encode_FWD_POS_lstm))
+
+FWD_play_lstm <- FWD_concatenated_lstm %>%
+  layer_dense(units = max_len, activation = 'relu', kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+FWD_lstm <- keras_model(inputs = c(FWD_ACT_input_lstm,  FWD_ACT_RES_input_lstm,
+                                        FWD_ACT_TYPE_input_lstm, FWD_X_CRD_input_lstm,
+                                        FWD_Y_CRD_input_lstm, FWD_X_END_input_lstm,
+                                        FWD_Y_END_input_lstm, FWD_POS_input_lstm),
+                        outputs = FWD_play_lstm)
+
+
+FWD_lstm %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(FWD_lstm)
+
+
+
+FWD_lstm_up_train_run <- FWD_lstm %>% fit(
+  x = list(up_train_FORWARD_ACT, up_train_FORWARD_ACT_RES, up_train_FORWARD_ACT_TYPE,
+           up_train_FORWARD_X_CRD, up_train_FORWARD_Y_CRD, up_train_FORWARD_X_END,
+           up_train_FORWARD_Y_END, up_train_FORWARD_POS),
+  y = up_train_OUTPUT,
+  epochs =  90, batch_size = configs[i,2],
+  validation_data = list(list(val_FORWARD_ACT, val_FORWARD_ACT_RES, val_FORWARD_ACT_TYPE,
+                              val_FORWARD_X_CRD, val_FORWARD_Y_CRD, val_FORWARD_X_END,
+                              val_FORWARD_Y_END,
+                              val_FORWARD_POS), val_OUTPUT),
+  callbacks = es)
+
+FWD_score_lstm <- FWD_lstm  %>% evaluate(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                              test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                              test_FORWARD_Y_END, test_FORWARD_POS),
+                                         test_OUTPUT)
+
+FWD_pred_LSTM <- FWD_lstm %>% predict(list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                      test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                      test_FORWARD_Y_END, test_FORWARD_POS))
+pred_classes <- FWD_pred_LSTM
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_FWD_LSTM <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+FWD_LSTM_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(FWD_lstm, list(test_FORWARD_ACT, test_FORWARD_ACT_RES, test_FORWARD_ACT_TYPE,
+                                                                                                test_FORWARD_X_CRD,test_FORWARD_Y_CRD, test_FORWARD_X_END,
+                                                                                                test_FORWARD_Y_END, test_FORWARD_POS),
+                                                                            batch_size = configs[i,2])))
+
+FWD_LSTM_res_up <- list(FWD_lstm_up_train_run, FWD_score_lstm, FWD_pred_LSTM, mod_metrics_FWD_LSTM, FWD_LSTM_roc)
+filename <- paste0("FWD_LSTM_res_up_",configs[i,1],"_",configs[i,2],".RData")
+save(FWD_LSTM_res_up, file = filename)
+}
+
+
+#W2W PLAY Model Building--------------------------------------------------------------------------------------------
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+
+
+W2W_ACT_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_act")
+
+W2W_encoded_ACT <- W2W_ACT_input %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_RES_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_res")
+
+W2W_encoded_ACT_RES <- W2W_ACT_RES_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_TYPE_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_type")
+
+W2W_encoded_ACT_TYPE <- W2W_ACT_TYPE_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_crd")
+
+W2W_encoded_X_CRD <- W2W_X_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_crd")
+
+W2W_encoded_Y_CRD <- W2W_Y_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_end")
+
+W2W_encoded_X_END <- W2W_X_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_end")
+
+W2W_encoded_Y_END <- W2W_Y_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_POS_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_position")
+
+W2W_encode_POS <- W2W_POS_input %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_concatenated <- layer_concatenate(c(W2W_encoded_ACT,  W2W_encoded_ACT_RES,
+                                         W2W_encoded_ACT_TYPE, W2W_encoded_X_CRD,
+                                         W2W_encoded_Y_CRD, W2W_encoded_X_END,
+                                         W2W_encoded_Y_END, W2W_encode_POS))
+
+W2W_play <- W2W_concatenated %>%
+  layer_dense(unit = 45, activation = "relu", kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_SimpleRNN <- keras_model(inputs = c(W2W_ACT_input,  W2W_ACT_RES_input,
+                                         W2W_ACT_TYPE_input, W2W_X_CRD_input,
+                                         W2W_Y_CRD_input, W2W_X_END_input,
+                                         W2W_Y_END_input, W2W_POS_input),
+                              outputs = W2W_play)
+
+
+W2W_SimpleRNN %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(W2W_SimpleRNN)
+
+W2W_train_run <- W2W_SimpleRNN %>% fit(
+ x = list(train_W2W_ACT, train_W2W_ACT_RES, train_W2W_ACT_TYPE,
+          train_W2W_X_CRD, train_W2W_Y_CRD, train_W2W_X_END,
+          train_W2W_Y_END, train_W2W_POS),
+ y = train_OUTPUT,
+ epochs = 90, batch_size = configs[i,2],
+ validation_data = list(list(val_W2W_ACT, val_W2W_ACT_RES, val_W2W_ACT_TYPE,
+                             val_W2W_X_CRD, val_W2W_Y_CRD, val_W2W_X_END, val_W2W_Y_END,
+                            val_W2W_POS),val_OUTPUT),
+ callbacks = es)
+
+
+
+W2W_score <- W2W_SimpleRNN  %>% evaluate(list(test_W2W_ACT, test_W2W_ACT_RES,
+                                                test_W2W_ACT_TYPE, test_W2W_X_CRD,
+                                                test_W2W_Y_CRD, test_W2W_X_END,
+                                                test_W2W_Y_END, test_W2W_POS),
+                                           test_OUTPUT)
+
+W2W_pred_SimpleRNN <- W2W_SimpleRNN  %>% predict(list(test_W2W_ACT, test_W2W_ACT_RES, test_W2W_ACT_TYPE,
+                                               test_W2W_X_CRD,test_W2W_Y_CRD,
+                                               test_W2W_X_END, test_W2W_Y_END, test_W2W_POS))
+
+pred_classes <- W2W_pred_SimpleRNN
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_W2W_SimpleRNN <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+W2W_SimpleRNN_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(W2W_SimpleRNN, list(test_W2W_ACT, test_W2W_ACT_RES, test_W2W_ACT_TYPE,
+                                                                                                  test_W2W_X_CRD,test_W2W_Y_CRD, test_W2W_X_END,
+                                                                                                  test_W2W_Y_END, test_W2W_POS),
+                                                                             batch_size = configs[i,2])))
+
+
+
+W2W_SimpleRNN_res <- list(W2W_train_run, W2W_score, W2W_pred_SimpleRNN, mod_metrics_W2W_SimpleRNN, W2W_SimpleRNN_roc)
+filename <- paste0("W2W_SimpleRNN_res",configs[i,1],"_",configs[i,2],".RData")
+save(W2W_SimpleRNN_res, file = filename)
+}
+
+#W2W PLAY Model Building--------------------------------------------------------------------------------------------
+
+# Simple Up sampled RNN
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+
+for (i in 1:nrow(configs)){
+
+
+W2W_ACT_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_act")
+
+W2W_encoded_ACT <- W2W_ACT_input %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_RES_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_res")
+
+W2W_encoded_ACT_RES <- W2W_ACT_RES_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_TYPE_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_type")
+
+W2W_encoded_ACT_TYPE <- W2W_ACT_TYPE_input %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_crd")
+
+W2W_encoded_X_CRD <- W2W_X_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_CRD_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_crd")
+
+W2W_encoded_Y_CRD <- W2W_Y_CRD_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_end")
+
+W2W_encoded_X_END <- W2W_X_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_END_input <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_end")
+
+W2W_encoded_Y_END <- W2W_Y_END_input %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_POS_input <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_position")
+
+W2W_encode_POS <- W2W_POS_input %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_simple_rnn(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_concatenated <- layer_concatenate(c(W2W_encoded_ACT,  W2W_encoded_ACT_RES,
+                                         W2W_encoded_ACT_TYPE, W2W_encoded_X_CRD,
+                                         W2W_encoded_Y_CRD, W2W_encoded_X_END,
+                                         W2W_encoded_Y_END, W2W_encode_POS))
+
+W2W_play <- W2W_concatenated %>%
+  layer_dense(unit = 45, activation = "relu", kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_SimpleRNN <- keras_model(inputs = c(W2W_ACT_input,  W2W_ACT_RES_input,
+                                         W2W_ACT_TYPE_input, W2W_X_CRD_input,
+                                         W2W_Y_CRD_input, W2W_X_END_input,
+                                         W2W_Y_END_input, W2W_POS_input),
+                              outputs = W2W_play)
+
+
+W2W_SimpleRNN %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(W2W_SimpleRNN)
+
+
+W2W_train_run_lstm <- W2W_lstm %>% fit(
+ x = list(train_W2W_ACT, train_W2W_ACT_RES, train_W2W_ACT_TYPE,
+         train_W2W_X_CRD, train_W2W_Y_CRD, train_W2W_X_END,
+          train_W2W_Y_END, train_W2W_POS),
+ y = train_OUTPUT,
+ epochs = 90, batch_size = configs[i,2],
+ validation_data = list(list(val_W2W_ACT, val_W2W_ACT_RES, val_W2W_ACT_TYPE,
+                              val_W2W_X_CRD, val_W2W_Y_CRD, val_W2W_X_END, val_W2W_Y_END,
+                              val_W2W_POS),val_OUTPUT),
+  callbacks = es)
+
+W2W_score <- W2W_SimpleRNN  %>% evaluate(list(test_W2W_ACT, test_W2W_ACT_RES,
+                                                test_W2W_ACT_TYPE, test_W2W_X_CRD,
+                                                test_W2W_Y_CRD, test_W2W_X_END,
+                                                test_W2W_Y_END, test_W2W_POS),
+                                           test_OUTPUT)
+
+W2W_pred_SimpleRNN <- W2W_SimpleRNN  %>% predict(list(test_W2W_ACT, test_W2W_ACT_RES, test_W2W_ACT_TYPE,
+                                               test_W2W_X_CRD,test_W2W_Y_CRD,
+                                               test_W2W_X_END, test_W2W_Y_END, test_W2W_POS))
+
+pred_classes <- W2W_pred_SimpleRNN
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_W2W_SimpleRNN <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+W2W_SimpleRNN_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(W2W_SimpleRNN, list(test_W2W_ACT, test_W2W_ACT_RES, test_W2W_ACT_TYPE,
+                                                                                                  test_W2W_X_CRD,test_W2W_Y_CRD, test_W2W_X_END,
+                                                                                                  test_W2W_Y_END, test_W2W_POS),
+                                                                             batch_size = configs[i,2])))
+
+
+
+W2W_SimpleRNN_res <- list(W2W_train_run, W2W_score, W2W_pred_SimpleRNN, mod_metrics_W2W_SimpleRNN, W2W_SimpleRNN_roc)
+filename <- paste0("W2W_SimpleRNN_res",configs[i,1],"_",configs[i,2],".RData")
+save(W2W_SimpleRNN_res, file = filename)
+}
+
+# LSTM up sampled ----------------------------------------------------------------------------------------------------------------------------------
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+for (i in 1:nrow(configs)){
+
+
+W2W_ACT_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_act_lstm")
+
+W2W_encoded_ACT_lstm <- W2W_ACT_input_lstm %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_RES_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_res_lstm")
+
+W2W_encoded_ACT_RES_lstm <- W2W_ACT_RES_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_TYPE_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_type")
+
+W2W_encoded_ACT_TYPE_lstm <- W2W_ACT_TYPE_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_crd")
+
+W2W_encoded_X_CRD_lstm <- W2W_X_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_crd")
+
+W2W_encoded_Y_CRD_lstm <- W2W_Y_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_end")
+
+W2W_encoded_X_END_lstm <- W2W_X_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_end")
+
+W2W_encoded_Y_END_lstm <- W2W_Y_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_POS_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_position")
+
+W2W_encode_POS_lstm <- W2W_POS_input_lstm %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_concatenated_lstm <- layer_concatenate(c(W2W_encoded_ACT_lstm,  W2W_encoded_ACT_RES_lstm,
+                                        W2W_encoded_ACT_TYPE_lstm, W2W_encoded_X_CRD_lstm,
+                                        W2W_encoded_Y_CRD_lstm, W2W_encoded_X_END_lstm,
+                                        W2W_encoded_Y_END_lstm, W2W_encode_POS_lstm))
+
+W2W_lstm_play <- W2W_concatenated_lstm %>%
+  layer_dense(units = max_len, activation = "relu", kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_lstm <- keras_model(inputs = c(W2W_ACT_input_lstm,  W2W_ACT_RES_input_lstm,
+                                        W2W_ACT_TYPE_input_lstm, W2W_X_CRD_input_lstm,
+                                        W2W_Y_CRD_input_lstm, W2W_X_END_input_lstm,
+                                        W2W_Y_END_input_lstm, W2W_POS_input_lstm),
+                             outputs = W2W_lstm_play)
+
+
+W2W_lstm %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(W2W_lstm)
+
+
+W2W_up_train_run_lstm <- W2W_lstm %>% fit(
+  x = list(up_train_W2W_ACT, up_train_W2W_ACT_RES, up_train_W2W_ACT_TYPE,
+           up_train_W2W_X_CRD, up_train_W2W_Y_CRD, up_train_W2W_X_END,
+           up_train_W2W_Y_END, up_train_W2W_POS),
+  y = up_train_OUTPUT,
+  epochs = 90, batch_size = configs[i,2],
+  validation_data = list(list(val_W2W_ACT, val_W2W_ACT_RES, val_W2W_ACT_TYPE,
+                              val_W2W_X_CRD, val_W2W_Y_CRD, val_W2W_X_END, val_W2W_Y_END,
+                              val_W2W_POS),val_OUTPUT),
+  callbacks = es)
+
+W2W_score_lstm <- W2W_lstm  %>% evaluate(list(test_W2W_ACT, test_W2W_ACT_RES,
+                                              test_W2W_ACT_TYPE, test_W2W_X_CRD,
+                                              test_W2W_Y_CRD, test_W2W_X_END,
+                                              test_W2W_Y_END, test_W2W_POS),
+                                         test_OUTPUT)
+
+W2W_pred_LSTM <- W2W_lstm  %>% predict(list(test_W2W_ACT, test_W2W_ACT_RES,
+                                            test_W2W_ACT_TYPE, test_W2W_X_CRD,
+                                            test_W2W_Y_CRD, test_W2W_X_END,
+                                            test_W2W_Y_END, test_W2W_POS))
+
+pred_classes <- W2W_pred_LSTM
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_W2W_LSTM <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+W2W_LSTM_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(W2W_lstm, list(test_W2W_ACT, test_W2W_ACT_RES, test_W2W_ACT_TYPE,
+                                                                                                test_W2W_X_CRD,test_W2W_Y_CRD, test_W2W_X_END,
+                                                                                                test_W2W_Y_END, test_W2W_POS),
+                                                                            batch_size = configs[i,2])))
+
+W2W_LSTM_res_up <- list(W2W_up_train_run_lstm, W2W_score_lstm, W2W_pred_LSTM, mod_metrics_W2W_LSTM, W2W_LSTM_roc)
+filename <- paste0("W2W_LSTM_res_up_",configs[i,1],"_",configs[i,2],".RData")
+save(W2W_LSTM_res_up, file = filename)
+}
+# LSTM 
+
+lambdas <- c(0, 0.001, 0.01, 0.1, 1, 10)
+batch_size <- c(32,128,256)
+configs <- expand.grid(lambdas,batch_size)
+for (i in 1:nrow(configs)){
+
+
+W2W_ACT_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_act_lstm")
+
+W2W_encoded_ACT_lstm <- W2W_ACT_input_lstm %>%
+  layer_embedding(input_dim = 30, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_RES_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_res_lstm")
+
+W2W_encoded_ACT_RES_lstm <- W2W_ACT_RES_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_ACT_TYPE_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_type")
+
+W2W_encoded_ACT_TYPE_lstm <- W2W_ACT_TYPE_input_lstm %>%
+  layer_embedding(input_dim = 475, output_dim = 25, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_crd")
+
+W2W_encoded_X_CRD_lstm <- W2W_X_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_CRD_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_crd")
+
+W2W_encoded_Y_CRD_lstm <- W2W_Y_CRD_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_X_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_x_end")
+
+W2W_encoded_X_END_lstm <- W2W_X_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+
+W2W_Y_END_input_lstm <- layer_input(shape = c(max_len,1), dtype = "float32", name = "W2W_y_end")
+
+W2W_encoded_Y_END_lstm <- W2W_Y_END_input_lstm %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_POS_input_lstm <- layer_input(shape = c(max_len), dtype = "int32", name = "W2W_position")
+
+W2W_encode_POS_lstm <- W2W_POS_input_lstm %>%
+  layer_embedding(input_dim = 20, output_dim = 5, trainable = TRUE) %>%
+  layer_lstm(units = 45, kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_concatenated_lstm <- layer_concatenate(c(W2W_encoded_ACT_lstm,  W2W_encoded_ACT_RES_lstm,
+                                        W2W_encoded_ACT_TYPE_lstm, W2W_encoded_X_CRD_lstm,
+                                        W2W_encoded_Y_CRD_lstm, W2W_encoded_X_END_lstm,
+                                        W2W_encoded_Y_END_lstm, W2W_encode_POS_lstm))
+
+W2W_lstm_play <- W2W_concatenated_lstm %>%
+  layer_dense(units = max_len, activation = "relu", kernel_regularizer =  regularizer_l2(l = configs[i,1])) %>%
+  layer_dense(unit = 1, activation = "sigmoid", kernel_regularizer =  regularizer_l2(l = configs[i,1]))
+
+W2W_lstm <- keras_model(inputs = c(W2W_ACT_input_lstm,  W2W_ACT_RES_input_lstm,
+                                        W2W_ACT_TYPE_input_lstm, W2W_X_CRD_input_lstm,
+                                        W2W_Y_CRD_input_lstm, W2W_X_END_input_lstm,
+                                        W2W_Y_END_input_lstm, W2W_POS_input_lstm),
+                             outputs = W2W_lstm_play)
+
+
+W2W_lstm %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+summary(W2W_lstm)
+
+#W2W_train_run_lstm <- W2W_lstm %>% fit(
+#  x = list(train_W2W_ACT, train_W2W_ACT_RES, train_W2W_ACT_TYPE,
+#           train_W2W_X_CRD, train_W2W_Y_CRD, train_W2W_X_END,
+#           train_W2W_Y_END, train_W2W_POS),
+#  y = train_OUTPUT,
+#  epochs = 90, batch_size = configs[i,2],
+#  validation_data = list(list(val_W2W_ACT, val_W2W_ACT_RES, val_W2W_ACT_TYPE,
+#                              val_W2W_X_CRD, val_W2W_Y_CRD, val_W2W_X_END, val_W2W_Y_END,
+#                              val_W2W_POS),val_OUTPUT),
+#  callbacks = es)
+
+W2W_up_train_run_lstm <- W2W_lstm %>% fit(
+  x = list(up_train_W2W_ACT, up_train_W2W_ACT_RES, up_train_W2W_ACT_TYPE,
+           up_train_W2W_X_CRD, up_train_W2W_Y_CRD, up_train_W2W_X_END,
+           up_train_W2W_Y_END, up_train_W2W_POS),
+  y = up_train_OUTPUT,
+  epochs = 90, batch_size = configs[i,2],
+  validation_data = list(list(val_W2W_ACT, val_W2W_ACT_RES, val_W2W_ACT_TYPE,
+                              val_W2W_X_CRD, val_W2W_Y_CRD, val_W2W_X_END, val_W2W_Y_END,
+                              val_W2W_POS),val_OUTPUT),
+  callbacks = es)
+
+W2W_score_lstm <- W2W_lstm  %>% evaluate(list(test_W2W_ACT, test_W2W_ACT_RES,
+                                              test_W2W_ACT_TYPE, test_W2W_X_CRD,
+                                              test_W2W_Y_CRD, test_W2W_X_END,
+                                              test_W2W_Y_END, test_W2W_POS),
+                                         test_OUTPUT)
+
+W2W_pred_LSTM <- W2W_lstm  %>% predict(list(test_W2W_ACT, test_W2W_ACT_RES,
+                                            test_W2W_ACT_TYPE, test_W2W_X_CRD,
+                                            test_W2W_Y_CRD, test_W2W_X_END,
+                                            test_W2W_Y_END, test_W2W_POS))
+
+pred_classes <- W2W_pred_LSTM
+pred_classes[pred_classes > 0.5] = 1
+pred_classes[pred_classes <= 0.5] = 0
+
+mod_metrics_W2W_LSTM <- confusionMatrix(as.factor(pred_classes), as.factor(test_OUTPUT), positive = '1')
+W2W_LSTM_roc  <- pROC::roc(as.numeric(test_OUTPUT), as.numeric(predict(W2W_lstm, list(test_W2W_ACT, test_W2W_ACT_RES, test_W2W_ACT_TYPE,
+                                                                                                test_W2W_X_CRD,test_W2W_Y_CRD, test_W2W_X_END,
+                                                                                                test_W2W_Y_END, test_W2W_POS),
+                                                                            batch_size = configs[i,2])))
+
+W2W_LSTM_res_up <- list(W2W_up_train_run_lstm, W2W_score_lstm, W2W_pred_LSTM, mod_metrics_W2W_LSTM, W2W_LSTM_roc)
+filename <- paste0("W2W_LSTM_res_up_",configs[i,1],"_",configs[i,2],".RData")
+save(W2W_LSTM_res_up, file = filename)
+}
+
+# RANDOM FOREST
+
+
+# RF OUTPUT 
+
+rf_output <- rbind(train_OUTPUT, val_OUTPUT, test_OUTPUT)
+
+
+# EXIT ACTION  
+rf_exit_act <- rbind(train_EXIT_ACT, val_EXIT_ACT, test_EXIT_ACT)
+rf_exit_act_data <- cbind(rf_exit_act, rf_output)
+rf_exit_act_data <- as.data.frame(rf_exit_act_data)
+
+for(i in 1:ncol(rf_exit_act_data)){
+  
+  rf_exit_act_data[,i] <- as.factor(rf_exit_act_data[,i])
+  
+}
+
+rf_exit_act_train <- rf_exit_act_data[1:1148,]
+rf_exit_act_test  <- rf_exit_act_data[1149:1559,]
+
+RF_mod_exit_ACT <- randomForest(rf_exit_act_train[,101]~ ., data = rf_exit_act_train[,1:100], importance = TRUE, ntree = 500, 
+                                ytest = rf_exit_act_test[,101] , xtest = rf_exit_act_test[,1:100])
+
+ACT_TN <- RF_mod_exit_ACT$test$confusion[1,1]
+ACT_FN <- RF_mod_exit_ACT$test$confusion[1,2]
+ACT_FP <- RF_mod_exit_ACT$test$confusion[2,1]
+ACT_TP <- RF_mod_exit_ACT$test$confusion[2,2]
+
+RF_ACT_acc  <-   (ACT_TN + ACT_TP)/(ACT_TN + ACT_FN + ACT_FP + ACT_TP) 
+RF_ACT_sen  <-   ACT_TP/(ACT_TP +  ACT_FN)
+RF_ACT_spec <-   ACT_TN/(ACT_TN + ACT_FP)
+RF_ACT_prec <-   ACT_TP/(ACT_TP + ACT_FP)
+RF_ACT_F1   <-   2*((RF_ACT_prec*RF_ACT_sen)/(RF_ACT_prec+RF_ACT_sen))
+
+RF_exit_ACT_AUC_test <- roc(rf_exit_act_test[,101], RF_mod_exit_ACT$test$votes[,2])
+RF_exit_ACT_AUC <- RF_exit_ACT_AUC_test$auc
+
+RF_ACT_res <- list(RF_mod_exit_ACT, RF_exit_ACT_AUC_test, RF_ACT_sen, RF_ACT_spec, RF_ACT_F1)
+save(RF_ACT_res, file = "RF_ACT_res.RData")
+
+# EXIT ACTION POS
+
+rf_exit_act <-   rbind(train_EXIT_ACT, val_EXIT_ACT, test_EXIT_ACT)
+rf_exit_pos <-   rbind(train_EXIT_POS, val_EXIT_POS, test_EXIT_POS)
+
+rf_exit_act_pos_data <- cbind(rf_exit_act, rf_exit_pos, rf_output)
+rf_exit_act_pos_data <- as.data.frame(rf_exit_act_pos_data)
+
+for(i in 1:ncol(rf_exit_act_pos_data)){
+  
+  rf_exit_act_pos_data[,i] <- as.factor(rf_exit_act_pos_data[,i])
+  
+}
+
+rf_exit_act_pos_train <- rf_exit_act_pos_data[1:1148,]
+rf_exit_act_pos_test  <- rf_exit_act_pos_data[1149:1559,]
+
+RF_mod_exit_ACT_POS <- randomForest(rf_exit_act_pos_train[,201]~ ., data = rf_exit_act_pos_train[,1:200], importance = TRUE, ntree = 500, 
+                                   ytest = rf_exit_act_pos_test[,201] , xtest = rf_exit_act_pos_test[,1:200])
+
+ACT_POS_TN <- RF_mod_exit_ACT_POS$test$confusion[1,1]
+ACT_POS_FN <- RF_mod_exit_ACT_POS$test$confusion[1,2]
+ACT_POS_FP <- RF_mod_exit_ACT_POS$test$confusion[2,1]
+ACT_POS_TP <- RF_mod_exit_ACT_POS$test$confusion[2,2]
+
+RF_ACT_POS_acc  <-  (ACT_POS_TN + ACT_POS_TP)/(ACT_POS_TN + ACT_POS_FN + ACT_POS_FP + ACT_POS_TP) 
+RF_ACT_POS_sen  <-   ACT_POS_TP/(ACT_POS_TP +  ACT_POS_FN)
+RF_ACT_POS_spec <-   ACT_POS_TN/(ACT_POS_TN + ACT_POS_FP)
+RF_ACT_POS_prec <-   ACT_POS_TP/(ACT_POS_TP + ACT_POS_FP)
+RF_ACT_POS_F1 <- 2*((RF_ACT_POS_prec*RF_ACT_POS_sen)/(RF_ACT_POS_prec+RF_ACT_POS_sen))
+
+RF_exit_ACT_POS_AUC_test <- roc(rf_exit_act_pos_test[,201], RF_mod_exit_ACT_POS$test$votes[,2])
+RF_exit_ACT_POS_AUC <- RF_exit_ACT_POS_AUC_test$auc
+
+RF_ACT_POS_res <- list(RF_mod_exit_ACT_POS, RF_exit_ACT_POS_AUC_test, RF_ACT_POS_sen, RF_ACT_POS_spec, RF_ACT_POS_F1)
+save(RF_ACT_POS_res, file = "RF_ACT_POS_res.RData")
+
+# FORWARD PLAY 
+
+# RF OUTPUT 
+rf_output <- rbind(train_OUTPUT, val_OUTPUT, test_OUTPUT)
+
+# ACTION  
+rf_forward_act <- rbind(train_FORWARD_ACT, val_FORWARD_ACT, test_FORWARD_ACT)
+rf_forward_act_data <- cbind(rf_forward_act, rf_output)
+rf_forward_act_data <- as.data.frame(rf_forward_act_data)
+
+for(i in 1:ncol(rf_forward_act_data)){
+  
+  rf_forward_act_data[,i] <- as.factor(rf_forward_act_data[,i])
+  
+}
+
+rf_forward_act_train <- rf_forward_act_data[1:1318,]
+rf_forward_act_test  <- rf_forward_act_data[1319:1884,]
+
+RF_mod_forward_ACT <- randomForest(rf_forward_act_train[,101]~ ., data = rf_forward_act_train[,1:100], importance = TRUE, ntree = 500, 
+                                ytest = rf_forward_act_test[,101] , xtest = rf_forward_act_test[,1:100])
+
+ACT_TN <- RF_mod_forward_ACT$test$confusion[1,1]
+ACT_FN <- RF_mod_forward_ACT$test$confusion[1,2]
+ACT_FP <- RF_mod_forward_ACT$test$confusion[2,1]
+ACT_TP <- RF_mod_forward_ACT$test$confusion[2,2]
+
+RF_ACT_acc  <-   (ACT_TN + ACT_TP)/(ACT_TN + ACT_FN + ACT_FP + ACT_TP) 
+RF_ACT_sen  <-   ACT_TP/(ACT_TP +  ACT_FN)
+RF_ACT_spec <-   ACT_TN/(ACT_TN + ACT_FP)
+RF_ACT_prec <-   ACT_TP/(ACT_TP + ACT_FP)
+RF_ACT_F1   <-   2*((RF_ACT_prec*RF_ACT_sen)/(RF_ACT_prec+RF_ACT_sen))
+
+RF_forward_ACT_AUC_test <- roc(rf_forward_act_test[,101], RF_mod_forward_ACT$test$votes[,2])
+RF_forward_ACT_AUC <- RF_forward_ACT_AUC_test$auc
+
+RF_ACT_res <- list(RF_mod_exit_ACT, RF_exit_ACT_AUC_test, RF_ACT_sen, RF_ACT_spec, RF_ACT_F1)
+save(RF_ACT_res, file = "RF_ACT_res.RData")
+
+
+
+
+# ACTION POS
+
+rf_forward_act <-   rbind(train_FORWARD_ACT, val_FORWARD_ACT, test_FORWARD_ACT)
+rf_forward_pos <-   rbind(train_FORWARD_POS, val_FORWARD_POS, test_FORWARD_POS)
+
+
+
+rf_forward_act_pos_data <- cbind(rf_forward_act, rf_forward_pos, rf_output)
+rf_forward_act_pos_data <- as.data.frame(rf_forward_act_pos_data)
+
+for(i in 1:ncol(rf_forward_act_pos_data)){
+  
+  rf_forward_act_pos_data[,i] <- as.factor(rf_forward_act_pos_data[,i])
+  
+}
+
+rf_forward_act_pos_train <- rf_forward_act_pos_data[1:1318,]
+rf_forward_act_pos_test  <- rf_forward_act_pos_data[1319:1884,]
+
+RF_mod_forward_ACT_POS <- randomForest(rf_forward_act_pos_train[,201]~ ., data = rf_forward_act_pos_train[,1:200], 
+                                       importance = TRUE, ntree = 500, 
+                                    ytest = rf_forward_act_pos_test[,201] , xtest = rf_forward_act_pos_test[,1:200])
+
+ACT_POS_TN <- RF_mod_forward_ACT_POS$test$confusion[1,1]
+ACT_POS_FN <- RF_mod_forward_ACT_POS$test$confusion[1,2]
+ACT_POS_FP <- RF_mod_forward_ACT_POS$test$confusion[2,1]
+ACT_POS_TP <- RF_mod_forward_ACT_POS$test$confusion[2,2]
+
+RF_ACT_POS_acc  <-  (ACT_POS_TN + ACT_POS_TP)/(ACT_POS_TN + ACT_POS_FN + ACT_POS_FP + ACT_POS_TP) 
+RF_ACT_POS_sen  <-   ACT_POS_TP/(ACT_POS_TP +  ACT_POS_FN)
+RF_ACT_POS_spec <-   ACT_POS_TN/(ACT_POS_TN + ACT_POS_FP)
+RF_ACT_POS_prec <-   ACT_POS_TP/(ACT_POS_TP + ACT_POS_FP)
+RF_ACT_POS_F1 <- 2*((RF_ACT_POS_prec*RF_ACT_POS_sen)/(RF_ACT_POS_prec+RF_ACT_POS_sen))
+
+RF_forward_ACT_POS_AUC_test <- roc(rf_forward_act_pos_test[,201], RF_mod_forward_ACT_POS$test$votes[,2])
+RF_forward_ACT_POS_AUC <- RF_forward_ACT_POS_AUC_test$auc
+
+RF_ACT_POS_res <- list(RF_mod_exit_ACT_POS, RF_exit_ACT_POS_AUC_test, RF_ACT_POS_sen, RF_ACT_POS_spec, RF_ACT_POS_F1)
+save(RF_ACT_POS_res, file = "RF_ACT_POS_res.RData")
+
+# Wide to Wide Play 
+
+
+# RF OUTPUT 
+rf_output <- rbind(train_OUTPUT, val_OUTPUT, test_OUTPUT)
+
+
+# ACTION  
+rf_W2W_act <- rbind(train_W2W_ACT, val_W2W_ACT, test_W2W_ACT)
+rf_W2W_act_data <- cbind(rf_W2W_act, rf_output)
+rf_W2W_act_data <- as.data.frame(rf_W2W_act_data)
+
+for(i in 1:ncol(rf_W2W_act_data)){
+  
+  rf_W2W_act_data[,i] <- as.factor(rf_W2W_act_data[,i])
+  
+}
+
+rf_W2W_act_train <- rf_W2W_act_data[1:1125,]
+rf_W2W_act_test  <- rf_W2W_act_data[1126:1608,]
+
+RF_mod_W2W_ACT <- randomForest(rf_W2W_act_train[,101]~ ., data = rf_W2W_act_train[,1:100], importance = TRUE, ntree = 500, 
+                                   ytest = rf_W2W_act_test[,101] , xtest = rf_W2W_act_test[,1:100])
+
+ACT_TN <- RF_mod_W2W_ACT$test$confusion[1,1]
+ACT_FN <- RF_mod_W2W_ACT$test$confusion[1,2]
+ACT_FP <- RF_mod_W2W_ACT$test$confusion[2,1]
+ACT_TP <- RF_mod_W2W_ACT$test$confusion[2,2]
+
+RF_ACT_acc  <-   (ACT_TN + ACT_TP)/(ACT_TN + ACT_FN + ACT_FP + ACT_TP) 
+RF_ACT_sen  <-   ACT_TP/(ACT_TP +  ACT_FN)
+RF_ACT_spec <-   ACT_TN/(ACT_TN + ACT_FP)
+RF_ACT_prec <-   ACT_TP/(ACT_TP + ACT_FP)
+RF_ACT_F1   <-   2*((RF_ACT_prec*RF_ACT_sen)/(RF_ACT_prec+RF_ACT_sen))
+
+RF_W2W_ACT_AUC_test <- roc(rf_W2W_act_test[,101], RF_mod_W2W_ACT$test$votes[,2])
+RF_W2W_ACT_AUC <- RF_W2W_ACT_AUC_test$auc
+
+RF_ACT_res <- list(RF_mod_exit_ACT, RF_exit_ACT_AUC_test, RF_ACT_sen, RF_ACT_spec, RF_ACT_F1)
+save(RF_ACT_res, file = "RF_ACT_res.RData")
+
+# ACTION POS
+
+
+rf_W2W_act <-   rbind(train_W2W_ACT, val_W2W_ACT, test_W2W_ACT)
+rf_W2W_pos <-   rbind(train_W2W_POS, val_W2W_POS, test_W2W_POS)
+
+rf_W2W_act_pos_data <- cbind(rf_W2W_act, rf_W2W_pos, rf_output)
+rf_W2W_act_pos_data <- as.data.frame(rf_W2W_act_pos_data)
+
+for(i in 1:ncol(rf_W2W_act_pos_data)){
+  
+  rf_W2W_act_pos_data[,i] <- as.factor(rf_W2W_act_pos_data[,i])
+  
+}
+
+rf_W2W_act_pos_train <- rf_W2W_act_pos_data[1:1318,]
+rf_W2W_act_pos_test  <- rf_W2W_act_pos_data[1319:1884,]
+
+RF_mod_W2W_ACT_POS <- randomForest(rf_W2W_act_pos_train[,201]~ ., data = rf_W2W_act_pos_train[,1:200], importance = TRUE, ntree = 500, 
+                                       ytest = na.omit(rf_W2W_act_pos_test[,201]), xtest = na.omit(rf_W2W_act_pos_test[,1:200]))
+
+ACT_POS_TN <- RF_mod_W2W_ACT_POS$test$confusion[1,1]
+ACT_POS_FN <- RF_mod_W2W_ACT_POS$test$confusion[1,2]
+ACT_POS_FP <- RF_mod_W2W_ACT_POS$test$confusion[2,1]
+ACT_POS_TP <- RF_mod_W2W_ACT_POS$test$confusion[2,2]
+
+RF_ACT_POS_acc  <-  (ACT_POS_TN + ACT_POS_TP)/(ACT_POS_TN + ACT_POS_FN + ACT_POS_FP + ACT_POS_TP) 
+RF_ACT_POS_sen  <-   ACT_POS_TP/(ACT_POS_TP +  ACT_POS_FN)
+RF_ACT_POS_spec <-   ACT_POS_TN/(ACT_POS_TN + ACT_POS_FP)
+RF_ACT_POS_prec <-   ACT_POS_TP/(ACT_POS_TP + ACT_POS_FP)
+RF_ACT_POS_F1 <- 2*((RF_ACT_POS_prec*RF_ACT_POS_sen)/(RF_ACT_POS_prec+RF_ACT_POS_sen))
+
+RF_W2W_ACT_POS_AUC_test <- roc(na.omit(rf_W2W_act_pos_test[,201]), RF_mod_W2W_ACT_POS$test$votes[,2])
+RF_W2W_ACT_POS_AUC <- RF_W2W_ACT_POS_AUC_test$auc
+
+RF_ACT_POS_res <- list(RF_mod_exit_ACT_POS, RF_exit_ACT_POS_AUC_test, RF_ACT_POS_sen, RF_ACT_POS_spec, RF_ACT_POS_F1)
+save(RF_ACT_POS_res, file = "RF_ACT_POS_res.RData")
+
+
