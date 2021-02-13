@@ -1,2 +1,0 @@
-# Recurrent Neural Network Honours Project (Recognising Patterns of Play in Rugby Union)
-This is code used to build and evaulate my models used in my honours project. The objective of the project was to recognise patterns of play in the sport of rugby union. This was done through learning seqeunces of observations, then identifying these seqeunces as one of four unique tactical plays in rugby union.  
